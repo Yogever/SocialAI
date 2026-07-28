@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SocialAI — party sim</title>
+  <link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="topbar">
+      <div class="titles">
+        <div class="h1">9 Elm Street &mdash; House Party</div>
+        <div class="sub">watch it unfold, or click anyone to talk</div>
+      </div>
+      <div class="controls">
+        <div id="pausedBadge" class="badge hidden">Paused</div>
+        <button id="pauseBtn">Pause</button>
+        <button id="speedBtn">1x</button>
+        <button id="modeBtn">Night</button>
+        <span id="status">connecting…</span>
+      </div>
+    </header>
+
+    <div id="main">
+      <div id="stage">
+        <img id="roomBg" alt="room" />
+        <div id="clusterLayer"></div>
+        <div id="agentLayer"></div>
+        <div id="tooltip" class="hidden"></div>
+      </div>
+
+      <aside id="logPanel">
+        <div class="log-title">Party Log</div>
+        <div id="logList"></div>
+      </aside>
+    </div>
+  </div>
+
+  <!-- chat drawer (built/shown by ui.js) -->
+  <div id="chatOverlay" class="hidden"></div>
+  <aside id="chat" class="hidden">
+    <div id="chatHeader">
+      <span class="chat-paused">&#9724; party paused</span>
+      <button id="chatClose">&times;</button>
+    </div>
+    <div id="chatProfile">
+      <img id="chatPortrait" alt="" />
+      <div>
+        <div id="chatName">—</div>
+        <div id="chatAge" class="sub">—</div>
+      </div>
+    </div>
+    <div id="chatStats"></div>
+    <div id="chatTranscript"></div>
+    <form id="chatForm">
+      <input id="chatInput" type="text" placeholder="Say something…" autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </aside>
+
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>
