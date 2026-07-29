@@ -10,3 +10,6 @@ __pycache__/
 
 # OS / editor cruft
 .DS_Store
+
+# JetBrains IDE
+.idea/
