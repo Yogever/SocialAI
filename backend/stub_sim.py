@@ -4,47 +4,17 @@ A *fake* party sim — no LLM, no real brains. Its job is to speak the real wire
 contract (docs/architecture.md) so the frontend is built against something that
 behaves like the eventual backend.
 
-The conversation/clustering logic here was ported from the Claude Design mockup,
-which originally ran it *in the browser*. It lives in the backend now because
-that's the whole point of the architecture: conversation forming/ending is
-simulation state, and simulation state is authoritative here, not in the UI.
-
-Two rhythms, still split:
-  - movement_step(dt) : pure physics. Advance positions toward targets, resolve
-                        collisions. Never changes an agent's *action* / state.
-  - decision_step()   : the "planner" (fake). The state machine: pick targets,
-                        drink, form/maintain/end conversations, emit events.
-                        This is where the LLM eventually goes.
+Physics, snapshotting and the world constants live in BaseSim; this file only
+holds the *decisions*: the fake state machine (pick targets, drink, form/end
+conversations) and the canned dialogue. That's the seam the real LLM planner
+replaces — see Sim in sim.py.
 """
 
 from __future__ import annotations
 
 import math
-import random
-from dataclasses import dataclass, field
 
-# World == the room the frontend draws, in display pixels (960 x 600).
-ROOM_W = 960
-ROOM_H = 600
-AGENT_RADIUS = 16
-ARRIVE_DIST = 6.0
-
-# Standing spots that line up with the drawn furniture. (x, y, type)
-WAYPOINTS = [
-    (780, 360, "bar"),
-    (90, 470, "couch"),
-    (220, 470, "couch"),
-    (140, 160, "window"),
-    (480, 470, "snack"),
-    (380, 260, "floor"),
-    (560, 230, "floor"),
-    (330, 330, "floor"),
-    (620, 330, "floor"),
-    (450, 220, "floor"),
-]
-
-_NAMES = ["Dana", "Sam", "Priya", "Jordan", "Marcus", "Elena", "Theo", "Naomi", "Kai", "Rosa"]
-_AGES = [24, 29, 26, 31, 27, 23, 33, 28, 25, 30]
+from backend.base_sim import BaseSim, _clamp
 
 _CLUSTER_LINES = [
     "That's hilarious.", "No way, really?", "I needed this drink.",
@@ -65,93 +35,17 @@ _REPLY_SHY = ["Oh, um, yeah I guess.", "Sorry, I'm not great at parties.",
               "That's... nice.", "I've kind of been standing here a while."]
 
 
-@dataclass
-class Agent:
-    id: str
-    name: str
-    age: int
-    pos: list[float]
-    target: list[float]
-    target_type: str
-    stats: dict[str, float]
-    action: str = "walking"        # walking | idle | drinking | talking
-    conversation_id: str | None = None
-    speed: float = 95.0            # pixels / second
-
-    def snapshot(self) -> dict:
-        return {
-            "id": self.id,
-            "name": self.name,
-            "age": self.age,
-            "pos": [round(self.pos[0], 1), round(self.pos[1], 1)],
-            "stats": {k: round(v) for k, v in self.stats.items()},
-            "action": self.action,
-            "conversation_id": self.conversation_id,
-        }
-
-
-class StubSim:
-    def __init__(self, n_agents: int = 10, seed: int | None = None):
-        self.rng = random.Random(seed)
-        self.tick = 0
-        self.agents: dict[str, Agent] = {}
+class StubSim(BaseSim):
+    def __init__(self, seed: int | None = None):
+        super().__init__(seed)
         self.clusters: dict[str, dict] = {}
         self._cid_seq = 0
-        self._next_arrival = 0
-        self._n_target = min(n_agents, len(_NAMES))
-
-    # ---- state broadcast ---------------------------------------------------
-
-    def snapshot(self) -> dict:
-        return {
-            "type": "world_state",
-            "tick": self.tick,
-            "agents": [a.snapshot() for a in self.agents.values()],
-        }
-
-    # ---- fast loop: physics only (never touches action/state) --------------
-
-    def movement_step(self, dt: float) -> None:
-        for a in self.agents.values():
-            dx = a.target[0] - a.pos[0]
-            dy = a.target[1] - a.pos[1]
-            dist = math.hypot(dx, dy)
-            if dist > ARRIVE_DIST:
-                step = min(a.speed * dt, dist)
-                a.pos[0] += dx / dist * step
-                a.pos[1] += dy / dist * step
-        self._resolve_collisions()
-
-    def _resolve_collisions(self) -> None:
-        """Backend owns collision. Talking pairs stand ~50px apart so the small
-        separation radius leaves them alone; everyone else gets nudged apart."""
-        agents = list(self.agents.values())
-        min_dist = AGENT_RADIUS * 2
-        for i in range(len(agents)):
-            for j in range(i + 1, len(agents)):
-                a, b = agents[i], agents[j]
-                dx = b.pos[0] - a.pos[0]
-                dy = b.pos[1] - a.pos[1]
-                dist = math.hypot(dx, dy) or 0.01
-                if dist < min_dist:
-                    push = (min_dist - dist) / 2
-                    nx, ny = dx / dist, dy / dist
-                    a.pos[0] -= nx * push
-                    a.pos[1] -= ny * push
-                    b.pos[0] += nx * push
-                    b.pos[1] += ny * push
-        for a in self.agents.values():
-            a.pos[0] = _clamp(a.pos[0], AGENT_RADIUS, ROOM_W - AGENT_RADIUS)
-            a.pos[1] = _clamp(a.pos[1], AGENT_RADIUS, ROOM_H - AGENT_RADIUS)
 
     # ---- slow loop: the state machine (fake "planner") ---------------------
 
     def decision_step(self) -> list[dict]:
         self.tick += 1
         events: list[dict] = []
-
-        if len(self.agents) < self._n_target:
-            events.append(self._spawn_agent())
 
         for a in self.agents.values():
             if a.action == "talking":
@@ -175,15 +69,6 @@ class StubSim:
         events += self._form_clusters()
         events += self._update_clusters()
         return events
-
-    def _reached(self, a: Agent) -> bool:
-        return math.hypot(a.target[0] - a.pos[0], a.target[1] - a.pos[1]) <= ARRIVE_DIST
-
-    def _send_to_waypoint(self, a: Agent) -> None:
-        x, y, t = self.rng.choice(WAYPOINTS)
-        a.target = [float(x), float(y)]
-        a.target_type = t
-        a.action = "walking"
 
     def _form_clusters(self) -> list[dict]:
         events: list[dict] = []
@@ -252,29 +137,6 @@ class StubSim:
             })
         return events
 
-    def _spawn_agent(self) -> dict:
-        i = self._next_arrival
-        self._next_arrival += 1
-        aid = f"a{i}"
-        x, y, t = self.rng.choice(WAYPOINTS[5:])  # enter heading to a floor spot
-        agent = Agent(
-            id=aid,
-            name=_NAMES[i],
-            age=_AGES[i],
-            pos=[ROOM_W / 2 + self.rng.uniform(-20, 20), ROOM_H - 12],
-            target=[float(x), float(y)],
-            target_type=t,
-            stats={
-                "drunkenness": self.rng.randint(0, 30),
-                "confidence": self.rng.randint(-70, 70),
-                "fun": self.rng.randint(-30, 70),
-                "attractiveness": self.rng.randint(40, 95),
-            },
-            action="walking",
-        )
-        self.agents[aid] = agent
-        return {"type": "agent_arrived", "tick": self.tick, "agent_id": aid, "name": agent.name}
-
     # ---- control (frontend -> backend) ------------------------------------
 
     def open_chat(self, agent_id: str) -> dict | None:
@@ -298,7 +160,3 @@ class StubSim:
             reply = self.rng.choice(_REPLY_NORMAL)
         return {"type": "agent_spoke", "tick": self.tick, "agent_id": agent_id,
                 "conversation_id": None, "text": reply}
-
-
-def _clamp(v: float, lo: float, hi: float) -> float:
-    return max(lo, min(hi, v))
