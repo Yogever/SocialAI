@@ -1,0 +1,40 @@
+{
+  "agents": [
+    {
+      "id": "1",
+      "name": "bob",
+      "age": 25,
+      "pos": [],
+      "target": [],
+      "target_type": "",
+      "stats": {
+        "drunkenness": 0,
+        "confidence": 70,
+        "attractiveness": 60
+      },
+      "action": "",
+      "conversation_id": null,
+      "speed": null,
+      "personality": "always smiling and very friendly",
+      "goal": "meet someone new tonight"
+    },
+    {
+      "id": "2",
+      "name": "gili",
+      "age": 23,
+      "pos": [],
+      "target": [],
+      "target_type": "",
+      "stats": {
+        "drunkenness": 0,
+        "confidence": 40,
+        "attractiveness": 60
+      },
+      "action": "",
+      "conversation_id": null,
+      "speed": null,
+      "personality": "smart and witty",
+      "goal": ""
+    }
+  ]
+}

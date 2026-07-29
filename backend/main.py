@@ -23,14 +23,23 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from .stub_sim import StubSim
+from backend.stub_sim import StubSim
 
 MOVEMENT_HZ = 30
 DECISION_PERIOD_S = 1.5
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-app = FastAPI()
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # startup: kick off the two loops; shutdown: cancel them cleanly.
+    # `hub` is defined lower in the module — resolved when this runs, not now.
+    hub.start()
+    yield
+    await hub.stop()
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class Hub:
@@ -38,7 +47,7 @@ class Hub:
     the two loops. One party, many spectators."""
 
     def __init__(self) -> None:
-        self.sim = StubSim(n_agents=10, seed=42)
+        self.sim = StubSim(seed=42)
         self.clients: set[WebSocket] = set()
         self.paused = False
         self.speed = 1  # sim fast-forward multiplier (1/2/3)
@@ -87,16 +96,6 @@ class Hub:
 
 
 hub = Hub()
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    hub.start()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    await hub.stop()
 
 
 @app.websocket("/ws")
