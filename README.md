@@ -76,8 +76,15 @@ stats; click one to pause the party and chat.
 
 ```
 backend/
-  main.py       # FastAPI: WebSocket + the two concurrent loops (transport/IO)
-  stub_sim.py   # fake party sim; pure logic, no IO (swap for the real brain)
+  main.py         # FastAPI: WebSocket + the two concurrent loops (transport/IO)
+  base_sim.py     # shared world, physics, snapshot format (Template Method)
+  sim.py          # the real brain: planner dispatcher + conversation orchestrator
+  stub_sim.py     # fake party sim; pure logic, no IO (token-free stand-in)
+  models.py       # Agent dataclass
+  planner.py      # planner output schema (Pydantic; the trust boundary)
+  context.py      # context assembly — what each agent knows (pure)
+  planner_client.py  # build_messages (pure) + invoke (the one model call)
+  debug_trace.py  # bounded ring of thought records (reasoning, deltas, errors)
 frontend/
   index.html
   style.css
@@ -88,5 +95,26 @@ frontend/
     sprites.js  # procedural pixel-art sprites, room, and stat icons
     render.js   # DOM render loop + entity interpolation
     ui.js       # tooltip / chat drawer / party log / controls
+    debug.js    # debug panel: per-agent reasoning, sim internals, step control
     util.js     # shared helpers
+```
+
+## Debugging the sim
+
+Hit **Debug** in the top bar. The panel shows, per agent, the things the 30Hz
+snapshot deliberately doesn't carry: personality and goal, the current
+*intention* (not just position), private rolling memory, the trigger inbox, the
+pending-approach limbo, and a stream of **thought records** — each with the
+model's reasoning, every stat delta and its stated reason, latency, the verbatim
+prompt, and the full error if the call failed. Click a guest in the room to
+inspect them.
+
+Pause the party and **Step** advances exactly one decision tick, so you can watch
+one thought resolve at a time.
+
+It's also readable without the browser:
+
+```bash
+curl -s localhost:8000/debug/state | jq        # internals + recent thoughts
+curl -s localhost:8000/debug/thought/12 | jq   # one thought, with its prompt
 ```

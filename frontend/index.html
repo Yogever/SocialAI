@@ -17,7 +17,9 @@
         <div id="pausedBadge" class="badge hidden">Paused</div>
         <button id="pauseBtn">Pause</button>
         <button id="speedBtn">1x</button>
+        <button id="stepBtn" class="hidden">Step</button>
         <button id="modeBtn">Night</button>
+        <button id="debugBtn">Debug</button>
         <span id="status">connecting…</span>
       </div>
     </header>
@@ -33,6 +35,19 @@
       <aside id="logPanel">
         <div class="log-title">Party Log</div>
         <div id="logList"></div>
+      </aside>
+
+      <!-- debug panel (filled by debug.js; takes the log's column while open) -->
+      <aside id="debugPanel" class="hidden">
+        <div class="dbg-head">
+          <span class="log-title">Debug</span>
+          <span id="dbgVitals"></span>
+        </div>
+        <div id="dbgAgents"></div>
+        <div id="dbgBody">
+          <div id="dbgDetail"></div>
+          <div id="dbgThoughts"></div>
+        </div>
       </aside>
     </div>
   </div>

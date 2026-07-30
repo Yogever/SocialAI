@@ -8,6 +8,7 @@
 import { agents, conversationLines, ui } from "./state.js";
 import { spriteFor, roomFor } from "./sprites.js";
 import { openChat, statsHTML } from "./ui.js";
+import { selectAgent } from "./debug.js";
 import { escapeHtml } from "./util.js";
 
 const stage = document.getElementById("stage");
@@ -28,7 +29,13 @@ function ensureEl(id) {
     el.className = "agent";
     el.addEventListener("mouseenter", () => { ui.hoveredId = id; });
     el.addEventListener("mouseleave", () => { if (ui.hoveredId === id) ui.hoveredId = null; });
-    el.addEventListener("click", () => openChat(id));
+    // While debugging, clicking a guest inspects them instead of opening the chat
+    // drawer — the drawer pauses the party and covers the room, which is the
+    // opposite of what you want mid-investigation.
+    el.addEventListener("click", () => {
+      if (ui.debugOpen) selectAgent(id);
+      else openChat(id);
+    });
     agentLayer.appendChild(el);
     els.set(id, el);
   }
