@@ -1,7 +1,8 @@
 """FastAPI app: transport + the two concurrent loops.
 
 Responsibilities split (on purpose):
-  - stub_sim.py owns *game logic* (pure-ish, no IO).
+  - sim.py owns *game logic* (the LLM planner + dispatcher; StubSim is the
+    token-free stand-in with the same interface).
   - this file owns *IO*: the WebSocket, broadcasting snapshots/events, and the
     two async loops that drive the sim at their two different rhythms.
 
@@ -23,7 +24,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
-from backend.stub_sim import StubSim
+from backend.sim import Sim
 
 MOVEMENT_HZ = 30
 DECISION_PERIOD_S = 1.5
@@ -47,7 +48,7 @@ class Hub:
     the two loops. One party, many spectators."""
 
     def __init__(self) -> None:
-        self.sim = StubSim(seed=42)
+        self.sim = Sim(seed=42)
         self.clients: set[WebSocket] = set()
         self.paused = False
         self.speed = 1  # sim fast-forward multiplier (1/2/3)
