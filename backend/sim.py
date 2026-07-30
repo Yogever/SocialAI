@@ -32,11 +32,13 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from dataclasses import dataclass, field
 
 from backend.base_sim import WAYPOINTS, BaseSim, _clamp
+from backend.debug_trace import DebugTrace, ThoughtRecord
 from backend.planner import PlannerDecision
-from backend.planner_client import plan
+from backend.planner_client import build_messages, invoke
 
 # Tuning knobs, all in one place.
 CONV_CAP = 10             # D8 fuse: max turns before a conversation is wound down
@@ -92,10 +94,14 @@ class Sim(BaseSim):
         self.memory: dict[str, list[str]] = {a: [] for a in self.agents}  # D9 raw log
         self._thinking: set[str] = set()          # in-flight guard (one thought/agent)
         self._tasks: set[asyncio.Task] = set()    # strong refs so tasks aren't GC'd
-        self._completed: list[tuple[str, PlannerDecision]] = []
+        self._completed: list[tuple[str, PlannerDecision, ThoughtRecord]] = []
         self._failed: list[str] = []
         self._last_decided: dict[str, int] = {}   # for the boredom timer
         self._dtick = 0
+        # --- observability (debug_trace.py; read-only, never steers the sim) ---
+        self.trace = DebugTrace()
+        self._starved: list[str] = []             # had a trigger, lost to the cap
+        self._failure_total = 0                   # monotonic; the ring forgets
         # Everyone walks in with no intention yet -> an `entry` thought (D12 #6).
         for a in self.agents:
             self._emit(a, Trigger("entry"))
@@ -113,16 +119,17 @@ class Sim(BaseSim):
         # 1) Apply finished thoughts. This is the await-free apply block: results
         #    computed off-thread (well, off-tick) land here and mutate the world.
         while self._completed:
-            agent_id, decision = self._completed.pop(0)
+            agent_id, decision, rec = self._completed.pop(0)
             self._thinking.discard(agent_id)
             self._last_decided[agent_id] = self._dtick
             agent = self.agents.get(agent_id)
             if agent is not None:
-                events += self._apply(agent, decision)
+                events += self._apply(agent, decision, rec)
 
         # 2) A failed call must not wedge its agent forever (the shell owns errors).
         while self._failed:
             agent_id = self._failed.pop(0)
+            self._failure_total += 1
             self._thinking.discard(agent_id)
             agent = self.agents.get(agent_id)
             if agent and agent.conversation_id in self.conversations:
@@ -143,24 +150,47 @@ class Sim(BaseSim):
     def _dispatch_thinks(self) -> None:
         """Turn queued triggers into background `plan()` tasks, honouring both D11
         guards: never two calls for one agent, never more than MAX in flight."""
+        self._starved = []
         for agent_id, box in self.inbox.items():
             if not box or agent_id in self._thinking:
                 continue
             if len(self._thinking) >= MAX_CONCURRENT:
+                # Guard 2 tripped. Note who got left holding a trigger: this loop
+                # walks `inbox` in insertion order, so the same agents lose every
+                # time — starvation here is systematic, not random, and invisible
+                # unless we say so out loud.
+                self._starved = [a for a, b in self.inbox.items()
+                                 if b and a not in self._thinking]
                 break
             trigger = box[-1]          # the focal event; older ones already lived
+            dropped = [t.kind for t in box[:-1]]   # never reach the model (recorded)
             box.clear()                # their moment; drop the rest to avoid pile-up
-            event_str = self._render(trigger, self.agents[agent_id])
+            agent = self.agents[agent_id]
+            event_str = self._render(trigger, agent)
             self._remember(agent_id, event_str)
             self._thinking.add(agent_id)
-            task = asyncio.create_task(self._think(agent_id, event_str))
+            rec = self.trace.open(
+                agent_id=agent_id,
+                agent_name=agent.name,
+                tick=self._dtick,
+                trigger_kind=trigger.kind,
+                event_str=event_str,
+                dropped_triggers=dropped,
+            )
+            task = asyncio.create_task(self._think(agent_id, event_str, rec))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
-    async def _think(self, agent_id: str, event_str: str) -> None:
+    async def _think(self, agent_id: str, event_str: str, rec: ThoughtRecord) -> None:
         """One planner call as a concurrent task. Reads state ONCE at the top (a
         consistent snapshot, since no tick is writing while this runs), awaits the
-        model, then hands the result back to the tick. It never writes the world."""
+        model, then hands the result back to the tick. It never writes the world.
+
+        `rec` is this task's own debug record — already in the ring, and no other
+        writer touches the fields set here, so filling it in is not shared-state
+        mutation in the sense concurrency-notes.md cares about.
+        """
+        t0 = time.perf_counter()
         try:
             agent = self.agents[agent_id]
             others = [o for o in self.agents.values() if o.id != agent_id]
@@ -168,23 +198,46 @@ class Sim(BaseSim):
             transcript = None
             if agent.conversation_id in self.conversations:
                 transcript = list(self.conversations[agent.conversation_id].transcript)
-            decision = await plan(agent, others, event_str, memory, transcript)
-            self._completed.append((agent_id, decision))
-        except Exception:
-            # swallow + queue for cleanup in the tick; one bad call can't crash the loop
+            # Assemble and record the prompt BEFORE awaiting: a hanging call is
+            # exactly when you want to read what was sent, and a cold local model
+            # can sit in that await for minutes.
+            messages = build_messages(agent, others, event_str, memory, transcript)
+            rec.record_prompt({"system": messages[0][1], "human": messages[1][1]})
+            decision = await invoke(messages)
+            rec.record_decision(
+                reasoning=decision.reasoning,
+                deltas=[d.model_dump() for d in decision.deltas],
+                action=decision.action.model_dump(),
+                latency_ms=_ms_since(t0),
+            )
+            self._completed.append((agent_id, decision, rec))
+        except Exception as exc:
+            # Still swallowed here — one bad call must not crash the loop, and the
+            # tick owns the cleanup. But it is no longer *silent*: the record keeps
+            # the type, message and traceback.
+            rec.mark_failed(exc, latency_ms=_ms_since(t0))
             self._failed.append(agent_id)
 
     # ==================================================================
     #  APPLY  — a finished decision becomes world changes + broadcast events.
     # ==================================================================
 
-    def _apply(self, agent, decision: PlannerDecision) -> list[dict]:
+    def _apply(self, agent, decision: PlannerDecision,
+               rec: ThoughtRecord | None = None) -> list[dict]:
+        stats_before = dict(agent.stats)
         self._apply_deltas(agent, decision.deltas)
 
         # GATE (D7): is this agent answering an approach it received? Then this whole
         # decision is an accept/decline, not an ordinary action.
         pending = self.pending.get(agent.id)
-        if pending is not None and pending.opened:
+        gated = pending is not None and pending.opened
+
+        if rec is not None:
+            rec.mark_applied(tick=self._dtick, stats_before=stats_before,
+                             stats_after=dict(agent.stats),
+                             gate="consent" if gated else None)
+
+        if gated:
             self.pending.pop(agent.id)
             return self._resolve_consent(agent, pending, decision.action)
 
@@ -441,6 +494,104 @@ class Sim(BaseSim):
             return "You left the conversation."
         return "You stayed put."
 
+    # ==================================================================
+    #  INTROSPECTION  — the read side of the debug UI. Pure reads; nothing here
+    #  influences the sim. Everything below is state that exists but never
+    #  reaches the 30Hz snapshot, either because it's static (personality),
+    #  private (memory), or internal to the dispatcher (inboxes, pending).
+    # ==================================================================
+
+    def in_flight(self) -> list[asyncio.Task]:
+        """The think tasks running right now. `debug_state()["thinking"]` is the
+        version for humans; this is for callers that need to await them (the
+        token-free test harness drives the tick by hand and waits here)."""
+        return list(self._tasks)
+
+    def debug_state(self) -> dict:
+        """One document with everything the debug panel needs. Deliberately off the
+        WebSocket (see docs/architecture.md): it's introspection wanted a couple of
+        times a second by one client, not world truth wanted at 30Hz by all of them."""
+        # An approach is keyed by target, but the approacher needs to see it too.
+        by_approacher = {pa.approacher: (tid, pa) for tid, pa in self.pending.items()}
+        return {
+            "tick": self._dtick,
+            "thinking": sorted(self._thinking),
+            "starved": list(self._starved),
+            "failures": self._failure_total,
+            "knobs": {
+                "max_concurrent": MAX_CONCURRENT,
+                "boredom_ticks": BOREDOM_TICKS,
+                "conv_cap": CONV_CAP,
+                "memory_n": MEMORY_N,
+            },
+            "agents": [self._debug_agent(a, by_approacher) for a in self.agents.values()],
+            "conversations": [
+                {
+                    "id": c.id,
+                    "participants": list(c.participants),
+                    "names": [self.agents[p].name for p in c.participants
+                              if p in self.agents],
+                    "turn_count": c.turn_count,
+                    "cap": c.cap,
+                    "speaker": c.speaker,
+                    "speaker_name": self.agents[c.speaker].name
+                                    if c.speaker in self.agents else "",
+                    "transcript": list(c.transcript),
+                }
+                for c in self.conversations.values()
+            ],
+        }
+
+    def _debug_agent(self, a, by_approacher: dict) -> dict:
+        idle_for = self._dtick - self._last_decided.get(a.id, -BOREDOM_TICKS)
+        return {
+            "id": a.id,
+            "name": a.name,
+            "age": a.age,
+            # Static identity: in every prompt, never in a snapshot.
+            "personality": a.personality,
+            "goal": a.goal,
+            # The *intention*. The snapshot ships `pos` only, so the one thing you
+            # most want when asking "why is it over there" is the one thing the
+            # party UI cannot currently tell you.
+            "action": a.action,
+            "pos": [round(a.pos[0], 1), round(a.pos[1], 1)],
+            "target": [round(a.target[0], 1), round(a.target[1], 1)],
+            "target_type": a.target_type,
+            "stats": {k: round(v) for k, v in a.stats.items()},
+            "conversation_id": a.conversation_id,
+            # Dispatcher-internal.
+            "inbox": [t.kind for t in self.inbox.get(a.id, [])],
+            "thinking": a.id in self._thinking,
+            "ticks_until_boredom": max(0, BOREDOM_TICKS - idle_for),
+            "memory": list(self.memory.get(a.id, [])),
+            "approach": self._debug_approach(a, by_approacher),
+        }
+
+    def _debug_approach(self, a, by_approacher: dict) -> dict | None:
+        """The D7 limbo, made legible. An agent parked mid-approach has
+        `action == "idle"`, so on the party screen it is indistinguishable from
+        someone genuinely doing nothing — the single most confusing state in the sim."""
+        if a.id in self.pending:                     # someone is approaching *me*
+            pa = self.pending[a.id]
+            who = self.agents.get(pa.approacher)
+            return {
+                "role": "target",
+                "who": who.name if who else pa.approacher,
+                "opener": pa.opener,
+                "state": "owes_consent" if pa.opened else "incoming",
+            }
+        if a.id in by_approacher:                    # *I* am approaching someone
+            target_id, pa = by_approacher[a.id]
+            who = self.agents.get(target_id)
+            return {
+                "role": "approacher",
+                "who": who.name if who else target_id,
+                "opener": pa.opener,
+                "state": "awaiting_consent" if pa.opened else "walking_over",
+            }
+        return None
+
     # open_chat / user_message (the user-as-participant path) are a distinct piece:
     # they need their own async round-trip to the chat panel, not the agent-agent
     # orchestrator above. Undesigned — but overridden as safe no-ops (not BaseSim's
@@ -450,3 +601,7 @@ class Sim(BaseSim):
 
     def user_message(self, agent_id: str, text: str) -> dict | None:
         return None
+
+
+def _ms_since(t0: float) -> int:
+    return round((time.perf_counter() - t0) * 1000)

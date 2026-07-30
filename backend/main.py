@@ -21,7 +21,7 @@ import asyncio
 import contextlib
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from backend.sim import Sim
@@ -82,6 +82,28 @@ class Hub:
             # faster speed -> decisions fire more often
             await asyncio.sleep(DECISION_PERIOD_S / self.speed)
 
+    async def step(self) -> None:
+        """Advance one decision tick by hand, for the debug panel. Only meaningful
+        while paused (both loops are then idle, so this is the sole driver).
+
+        A step is one decision tick *plus* the movement that tick would have got.
+        Decisions alone would be misleading: nobody would ever reach a target, so
+        `_scan_arrivals` would never fire and repeated stepping would produce
+        nothing but boredom triggers.
+
+        It deliberately does NOT wait for the thoughts it spawns. Those are applied
+        by the *next* tick, which is the dispatcher's real two-phase shape and what
+        the panel shows (`in_flight` -> `applied`). Waiting here would also freeze
+        the control channel: `ws_endpoint` handles one message at a time, so a step
+        that blocked for a slow model would swallow the next pause/resume with it.
+        """
+        for e in self.sim.decision_step():
+            await self.broadcast(e)
+        dt = 1.0 / MOVEMENT_HZ
+        for _ in range(round(DECISION_PERIOD_S * MOVEMENT_HZ)):
+            self.sim.movement_step(dt)
+        await self.broadcast(self.sim.snapshot())
+
     def start(self) -> None:
         self._tasks = [
             asyncio.create_task(self.movement_loop()),
@@ -132,10 +154,54 @@ async def handle_control(msg: dict) -> None:
         hub.paused = False
     elif mtype == "set_speed":
         hub.speed = max(1, min(3, int(msg.get("value", 1))))
+    elif mtype == "step":
+        # Debug supervision: only while paused, or it would double-advance the
+        # sim behind the decision loop's back.
+        if hub.paused:
+            await hub.step()
     elif mtype == "user_message":
         reply = hub.sim.user_message(msg.get("agent_id", ""), msg.get("text", ""))
         if reply:
             await hub.broadcast(reply)
+
+
+# --- debug introspection (read-only) --------------------------------------
+# Deliberately HTTP, not the WebSocket: the wire contract in docs/architecture.md
+# carries state (latest-wins) and events (append-only), and this is neither. Off
+# the socket it costs the 30Hz path nothing, and it's curl-able without a browser.
+
+
+def _debuggable_sim():
+    """StubSim has no trace, and the sim is swappable — say so plainly."""
+    if not hasattr(hub.sim, "debug_state"):
+        raise HTTPException(status_code=501,
+                            detail=f"{type(hub.sim).__name__} has no debug surface")
+    return hub.sim
+
+
+@app.get("/debug/state")
+async def debug_state(limit: int = 60, agent: str | None = None) -> dict:
+    """Everything the panel needs, in one latest-wins document: sim internals plus
+    a page of recent thoughts. Prompts and tracebacks are omitted here (they'd
+    dominate the payload) — fetch a single thought for those."""
+    sim = _debuggable_sim()
+    state = sim.debug_state()
+    state["paused"] = hub.paused
+    state["speed"] = hub.speed
+    state["clients"] = len(hub.clients)
+    state["thoughts"] = [r.to_dict() for r in sim.trace.recent(limit, agent)]
+    return state
+
+
+@app.get("/debug/thought/{seq}")
+async def debug_thought(seq: int) -> dict:
+    """One thought in full: the verbatim prompt that was sent, and the traceback
+    if it failed."""
+    sim = _debuggable_sim()
+    rec = sim.trace.get(seq)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"no thought {seq} in the ring")
+    return rec.to_dict(full=True)
 
 
 # Serve the frontend. Mounted last so /ws and any API routes win first.
