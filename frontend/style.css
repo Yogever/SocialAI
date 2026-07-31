@@ -66,7 +66,9 @@ body {
 
 /* --- stage + log ------------------------------------------------------- */
 
-#main { display: flex; gap: 16px; width: 100%; justify-content: center; }
+/* wraps so a side panel drops below the stage on a narrow window rather than
+   pushing the room off-screen */
+#main { display: flex; flex-wrap: wrap; gap: 16px; width: 100%; justify-content: center; }
 
 #stage {
   position: relative;
@@ -206,6 +208,126 @@ body {
 #chatForm { padding: 14px 18px; border-top: 1px solid rgba(255, 255, 255, 0.08); display: flex; gap: 8px; }
 #chatInput { flex: 1; background: var(--btn); border: 1px solid var(--btn-border); color: var(--ink); font-size: 13px; padding: 9px 12px; border-radius: 20px; outline: none; }
 #chatForm button { background: var(--gold); border: none; color: #231a12; font-weight: 700; font-size: 13px; padding: 9px 16px; border-radius: 20px; cursor: pointer; }
+
+/* --- debug panel ------------------------------------------------------- */
+/* Takes over the party log's column while open (the thought stream is a superset
+   of what the log says) and widens #app to make room for reasoning text. */
+
+#app.debugging { width: 1440px; }
+#app.debugging #logPanel { display: none; }
+
+#debugBtn.on { background: rgba(242, 196, 109, 0.18); border-color: var(--gold); color: var(--gold); }
+#stepBtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+#debugPanel {
+  /* takes the leftover width beside the 960px stage; grows to the stage's width
+     when #main wraps it onto its own line */
+  flex: 1 1 464px; max-width: 960px;
+  height: 600px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex; flex-direction: column;
+  font-family: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  font-size: 11px; line-height: 1.45;
+}
+.dbg-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.dbg-head .log-title { margin-bottom: 0; }
+#dbgVitals { font-size: 10px; color: #d8cdd2; text-align: right; }
+#dbgVitals .k { color: var(--muted); }
+#dbgVitals .sep { color: #5c4d58; margin: 0 5px; }
+
+#dbgAgents { display: flex; flex-wrap: wrap; gap: 5px; margin: 9px 0; }
+.dbg-chip {
+  background: var(--btn); border: 1px solid var(--btn-border);
+  color: var(--ink); font: 600 10px/1 inherit;
+  padding: 5px 9px; border-radius: 12px; cursor: pointer;
+}
+.dbg-chip:hover { background: rgba(255, 255, 255, 0.12); }
+.dbg-chip.on { background: rgba(242, 196, 109, 0.18); border-color: var(--gold); color: var(--gold); }
+
+#dbgBody { flex: 1; overflow-y: auto; padding-right: 3px; }
+
+/* key/value detail block */
+.dbg-who { font-size: 13px; font-weight: 700; margin-bottom: 7px; display: flex; gap: 8px; align-items: baseline; }
+.dbg-kv { display: flex; gap: 8px; padding: 3px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.dbg-kv > .k { color: var(--muted); flex: 0 0 74px; text-transform: uppercase; font-size: 9px; padding-top: 2px; }
+.dbg-kv > .v { flex: 1; min-width: 0; overflow-wrap: break-word; }
+.dbg-stat { margin-right: 7px; color: var(--muted); }
+.dbg-stat b { color: var(--ink); }
+
+.dbg-transcript, .dbg-memory {
+  margin-top: 4px; padding-left: 8px;
+  border-left: 2px solid rgba(255, 255, 255, 0.12);
+  color: #cfc3c9;
+}
+.dbg-memory { color: var(--muted); }
+
+/* thought stream */
+.dbg-section {
+  margin: 14px 0 7px; font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+  color: var(--gold); text-transform: uppercase;
+  display: flex; justify-content: space-between;
+}
+.dbg-count { color: var(--muted); font-weight: 400; }
+
+.dbg-thought {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-left: 2px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  padding: 7px 9px; margin-bottom: 7px;
+}
+.dbg-thought.live { border-left-color: var(--gold); }
+.dbg-thought.bad { border-left-color: #e0607a; }
+
+.dbg-t-head { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+.dbg-tick { color: #8f8090; font-size: 9px; }
+.dbg-name { font-weight: 700; }
+.dbg-trigger { color: var(--muted); }
+.dbg-arrow { color: #5c4d58; }
+.dbg-action { color: var(--gold); font-weight: 700; }
+.dbg-lat { margin-left: auto; color: #8f8090; font-size: 9px; }
+
+.dbg-event { color: var(--muted); margin-top: 4px; }
+.dbg-said { color: var(--pink); margin-top: 3px; }
+.quote {
+  margin-top: 4px; padding-left: 7px;
+  border-left: 2px solid rgba(242, 196, 109, 0.35);
+  color: #e6dade; font-style: italic;
+}
+
+.dbg-deltas { margin-top: 5px; display: flex; flex-direction: column; gap: 2px; }
+.dbg-delta { font-weight: 700; margin-right: 6px; }
+.dbg-delta.up { color: #7fae6b; }
+.dbg-delta.down { color: #c15c5c; }
+
+.dbg-tag {
+  display: inline-block; margin-top: 5px; padding: 1px 6px; border-radius: 8px;
+  font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px;
+  background: rgba(242, 180, 192, 0.14); border: 1px solid rgba(242, 180, 192, 0.4);
+  color: var(--pink);
+}
+.dbg-promptbtn {
+  margin-top: 6px; background: none; border: 1px solid var(--btn-border);
+  color: var(--muted); font: 600 9px/1 inherit;
+  padding: 3px 8px; border-radius: 8px; cursor: pointer; text-transform: uppercase;
+}
+.dbg-promptbtn:hover { color: var(--ink); background: rgba(255, 255, 255, 0.08); }
+.dbg-pre {
+  margin: 6px 0 0; max-height: 260px; overflow: auto;
+  background: rgba(0, 0, 0, 0.32); border-radius: 6px; padding: 8px;
+  font-size: 10px; line-height: 1.4; color: #cfc3c9;
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+
+.dbg-live { color: var(--gold); }
+.dbg-warn { color: var(--pink); }
+.dbg-bad { color: #e0607a; }
+.dbg-empty { color: var(--muted); padding: 8px 0; line-height: 1.5; }
+#debugPanel .dim { color: #8f8090; font-weight: 400; }
+#debugPanel .strike { text-decoration: line-through; }
 
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-thumb { background: #4a3a44; border-radius: 4px; }

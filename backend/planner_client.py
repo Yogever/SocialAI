@@ -14,6 +14,16 @@ a hosted one, changed without touching this code. The ordering discipline that
 makes caching work (RULES -> identity -> volatile) is baked into how the messages
 are laid out below, and transfers across providers even though the explicit
 cache-control markers do not.
+
+The call is deliberately **two steps**, not one:
+
+    build_messages()   pure, no network — the exact prompt, assertable token-free
+    invoke()           the one impure line: send it and validate the reply
+
+A single `plan()` that did both would hide the prompt inside the await, and the
+moment you most want to read a prompt is while its call is still hanging (a cold
+local model can sit there for minutes). Splitting them lets the caller record what
+it is about to send *before* sending it.
 """
 
 from __future__ import annotations
@@ -45,25 +55,36 @@ def _planner():
     return model.with_structured_output(PlannerDecision, method="json_schema")
 
 
-async def plan(
+def build_messages(
     agent: Agent,
     others: list[Agent],
     event: str,
     memory: list[str],
     transcript: list[str] | None = None,
-) -> PlannerDecision:
-    """Run one planner call for `agent` and return its validated decision.
+) -> list[tuple[str, str]]:
+    """Assemble the exact messages the model will see. Pure — the last piece of
+    the planner's core that was still buried inside the network call, split out so
+    the prompt can be inspected (and asserted) without spending a token.
 
-    Three steps: assemble the context (pure core), lay it into the cached/volatile
-    message slots (F1), invoke and let Pydantic validate the reply. Async because
-    it runs inside the D11 dispatcher as one concurrent task among many.
+    The ordering is the F1 caching discipline: shared rules, then per-agent stable
+    identity, then the volatile turn.
     """
     identity = build_identity(agent)
     dynamic = build_dynamic(agent, others, event, memory, transcript)
-    messages = [
+    return [
         # system == the cached prefix: shared rules, then this agent's stable identity.
         ("system", f"{RULES}\n\n<you>\n{serialize(identity)}\n</you>"),
         # human == the volatile turn: how it feels, what it sees, what just happened.
         ("human", serialize(dynamic)),
     ]
+
+
+async def invoke(messages: list[tuple[str, str]]) -> PlannerDecision:
+    """Send an assembled prompt and return the validated decision — the whole
+    impure surface of the planner, in one line.
+
+    Async because it runs inside the D11 dispatcher as one concurrent task among
+    many. Raises on anything the model or the schema rejects; the caller (the
+    dispatcher) owns error handling.
+    """
     return await _planner().ainvoke(messages)

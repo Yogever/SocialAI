@@ -9,7 +9,10 @@ export const agents = new Map();            // id -> agent view
 export const conversationLines = new Map(); // conversation_id -> latest spoken line
 
 // small UI-only state (not world truth; never sent as authority)
-export const ui = { hoveredId: null, chatId: null, dark: true, paused: false, speed: 1 };
+export const ui = {
+  hoveredId: null, chatId: null, dark: true, paused: false, speed: 1,
+  debugOpen: false, debugAgentId: null,
+};
 
 export function applySnapshot(snapshot) {
   const seen = new Set();

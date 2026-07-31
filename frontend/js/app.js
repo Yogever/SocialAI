@@ -4,8 +4,10 @@ import { connect } from "./net.js";
 import { applySnapshot } from "./state.js";
 import { start as startRender } from "./render.js";
 import { onEvent, onStatus, initControls } from "./ui.js";
+import { initDebug } from "./debug.js";
 
 initControls();
+initDebug();
 
 connect({
   onState: (snapshot) => applySnapshot(snapshot), // state channel: latest-wins
