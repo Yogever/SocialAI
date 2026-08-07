@@ -2,6 +2,9 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 
 # LLM planner (the model call is behind an abstraction; the model itself is a
-# runtime config knob, PLANNER_MODEL, today pointing at a local Ollama model).
+# runtime config knob, PARTY_MODEL, today pointing at Gemini 3.1 Flash-Lite —
+# hosted, because the party runs in real time and a local CPU model is ~44s a
+# thought). Ollama stays installed so PARTY_MODEL can point back at it offline.
 langchain==1.3.14
+langchain-google-genai==4.3.2
 langchain-ollama==1.1.0
